@@ -5,7 +5,7 @@ plugins {
 
 group = "org.allaymc.netallay"
 description = "NetEase PyRpc Communication API for AllayMC - Similar to NukkitMaster"
-version = "1.0.0"
+version = "0.1.0"
 
 java {
     toolchain {
@@ -14,14 +14,13 @@ java {
 }
 
 allay {
-    api = "0.19.0"
+    api = "0.26.0"
     apiOnly = false
 
     plugin {
-        name = "NetAllay"
         entrance = ".NetAllay"
         authors += "YiRanKuma"
-        website = "https://github.com/YiRanKuma/NetAllay"
+        website = "https://github.com/AllayMC/NetAllay"
     }
 }
 
@@ -31,8 +30,8 @@ repositories {
 
 dependencies {
     compileOnly("org.projectlombok:lombok:1.18.34")
-    annotationProcessor("org.projectlombok:lombok:1.18.34")
-    implementation("org.msgpack:msgpack-core:0.9.8")
-    compileOnly("org.allaymc:protocol-extension:0.1.2")
+    compileOnly("org.allaymc:protocol-extension:0.1.6")
     compileOnly("com.google.code.gson:gson:2.10.1")
+    implementation("org.msgpack:msgpack-core:0.9.8")
+    annotationProcessor("org.projectlombok:lombok:1.18.34")
 }

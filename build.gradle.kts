@@ -21,7 +21,7 @@ allay {
     apiOnly = false
 
     plugin {
-        entrance = ".NetAllay"
+        entrance = "org.allaymc.netallay.NetAllay"
         authors += "YiRanKuma"
         website = "https://github.com/AllayMC/NetAllay"
     }

@@ -7,8 +7,13 @@ import org.allaymc.netallay.NetAllay;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
 
 /**
  * Manager for NetEase shop functionality.
@@ -242,6 +247,92 @@ public class ShopManager {
         );
     }
 
+    // ==================== Order API ====================
+
+    /**
+     * Gets the active signing key based on test/production mode.
+     */
+    private String getActiveSignKey() {
+        return testServer ? testGameKey : gameKey;
+    }
+
+    /**
+     * Gets the shop server base URL.
+     */
+    private String getShopBaseUrl() {
+        return WebUtil.getShopBaseUrl(shopServerUrl, testServer);
+    }
+
+    /**
+     * Retrieves the player's order list from the NetEase order server.
+     * <p>
+     * This is an async operation. The callback receives the JSON response on success,
+     * or an exception on failure.
+     * <p>
+     * <b>Usage Example:</b>
+     * <pre>{@code
+     * shop.getPlayerOrderList(player, (result, error) -> {
+     *     if (error != null) {
+     *         log.error("Failed to get orders", error);
+     *         return;
+     *     }
+     *     JsonArray entities = result.getAsJsonArray("entities");
+     *     // Process each order...
+     * });
+     * }</pre>
+     *
+     * @param player   the player
+     * @param callback callback with (JsonObject result, Throwable error)
+     */
+    public void getPlayerOrderList(Player player, BiConsumer<JsonObject, Throwable> callback) {
+        String uuid = player.getControlledEntity().getUniqueId().toString();
+
+        WebUtil.getPlayerOrderList(gameId, uuid, getActiveSignKey(), getShopBaseUrl())
+                .whenComplete((result, error) -> {
+                    if (error != null) {
+                        log.error("Failed to get order list for {}", player.getOriginName(), error);
+                    } else {
+                        log.debug("Got order list for {}: {}", player.getOriginName(), result);
+                    }
+                    callback.accept(result, error);
+                });
+    }
+
+    /**
+     * Notifies the NetEase order server that orders have been shipped/completed.
+     * <p>
+     * Call this after you have delivered the items to the player.
+     * <p>
+     * <b>Usage Example:</b>
+     * <pre>{@code
+     * List<String> finishedOrderIds = List.of("order123", "order456");
+     * shop.finishPlayerOrder(player, finishedOrderIds, (result, error) -> {
+     *     if (error != null) {
+     *         log.error("Failed to finish orders", error);
+     *         return;
+     *     }
+     *     log.info("Orders completed successfully");
+     * });
+     * }</pre>
+     *
+     * @param player   the player
+     * @param orderIds list of order IDs that have been delivered
+     * @param callback callback with (JsonObject result, Throwable error)
+     */
+    public void finishPlayerOrder(Player player, List<String> orderIds, BiConsumer<JsonObject, Throwable> callback) {
+        String uuid = player.getControlledEntity().getUniqueId().toString();
+
+        WebUtil.finishPlayerOrder(gameId, uuid, orderIds, getActiveSignKey(), getShopBaseUrl())
+                .whenComplete((result, error) -> {
+                    if (error != null) {
+                        log.error("Failed to finish orders for {}", player.getOriginName(), error);
+                    } else {
+                        log.info("Orders completed for {}: {}", player.getOriginName(), orderIds);
+                    }
+                    callback.accept(result, error);
+                });
+    }
+
     // ==================== Per-Player Configuration ====================
 
     /**
@@ -304,12 +395,22 @@ public class ShopManager {
                 (player, data) -> fireShopEvent(ShopEvent.PLAYER_URGE_SHIP, player, data)
         );
 
-        // Listen for client buy success
+        // Listen for client buy success (mod event)
         plugin.listenForEvent(
                 ShopConstants.SHOP_NAMESPACE,
                 ShopConstants.SHOP_CLIENT_SYSTEM,
                 ShopConstants.EVENT_CLIENT_BUY_SUCCESS,
                 (player, data) -> fireShopEvent(ShopEvent.PLAYER_BUY_ITEM_SUCCESS, player, data)
+        );
+
+        // Listen for engine callbacks (alternative event format from client)
+        plugin.listenForClientEngineCall(
+                "StoreBuySuccServerEvent",
+                (player, data) -> fireShopEvent(ShopEvent.PLAYER_BUY_ITEM_SUCCESS, player, data)
+        );
+        plugin.listenForClientEngineCall(
+                "UrgeShipEvent",
+                (player, data) -> fireShopEvent(ShopEvent.PLAYER_URGE_SHIP, player, data)
         );
 
         log.debug("Shop internal listeners registered");
@@ -342,7 +443,16 @@ public class ShopManager {
             responseData.put("isTestServer", testServer);
             responseData.put("useCustomShop", useCustomShop);
             responseData.put("cacheTime", cacheTime);
-            responseData.put("uid", 0L);
+
+            // Get NetEase UID from player's login data
+            long uid = 0L;
+            if (player.isNetEasePlayer()) {
+                var neteaseData = player.getLoginData().getNetEaseData();
+                if (neteaseData != null) {
+                    uid = neteaseData.uid();
+                }
+            }
+            responseData.put("uid", uid);
             responseData.put("platformUid", "");
         }
 

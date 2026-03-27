@@ -86,6 +86,9 @@ public class NetAllay extends Plugin {
         config = NetAllayConfig.load(pluginContainer.dataFolder());
         pluginLogger.info("Configuration loaded.");
 
+        // Start HTTP client for order API
+        org.allaymc.netallay.shop.WebUtil.startHttpClient();
+
         // Initialize shop manager
         shopManager = new ShopManager(this);
 
@@ -110,6 +113,9 @@ public class NetAllay extends Plugin {
             shopManager = null;
         }
 
+        // Stop HTTP client
+        org.allaymc.netallay.shop.WebUtil.stopHttpClient();
+
         pluginLogger.info("NetAllay disabled.");
         instance = null;
     }
@@ -130,6 +136,20 @@ public class NetAllay extends Plugin {
     public void listenForEvent(String namespace, String systemName, String eventName, PyRpcHandler handler) {
         listenerRegistry.register(namespace, systemName, eventName, handler);
         pluginLogger.debug("Registered listener for {}:{}:{}", namespace, systemName, eventName);
+    }
+
+    /**
+     * Registers a listener for client engine callbacks.
+     * <p>
+     * Engine callbacks use a different format: [eventName, [], null]
+     * Common engine callbacks: StoreBuySuccServerEvent, UrgeShipEvent
+     *
+     * @param eventName the engine callback name
+     * @param handler   the callback function to handle the event
+     */
+    public void listenForClientEngineCall(String eventName, PyRpcHandler handler) {
+        listenerRegistry.register("engine", "callback", eventName, handler);
+        pluginLogger.debug("Registered engine callback listener for: {}", eventName);
     }
 
     /**

@@ -6,6 +6,9 @@ import org.msgpack.core.MessageUnpacker;
 import org.msgpack.value.Value;
 import org.msgpack.value.ValueType;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -23,6 +26,8 @@ import java.util.*;
  * @author YiRanKuma
  */
 public final class PyRpcCodec {
+
+    private static final Logger log = LoggerFactory.getLogger(PyRpcCodec.class);
 
     /**
      * Server to Client event type identifier.
@@ -88,50 +93,76 @@ public final class PyRpcCodec {
 
             Value value = unpacker.unpackValue();
             if (!value.isArrayValue()) {
+                log.warn("[Decode] Root is not array: {}", value.getValueType());
                 return null;
             }
 
             List<Value> array = value.asArrayValue().list();
             if (array.size() < 2) {
+                log.warn("[Decode] Root array too short: size={}", array.size());
                 return null;
             }
 
             // Parse event type
             String eventType = valueToString(array.get(0));
 
-            // Parse event details
+            // Parse event details - can be array or map depending on packet type
             Value detailsValue = array.get(1);
-            if (!detailsValue.isArrayValue()) {
-                return null;
-            }
 
-            List<Value> details = detailsValue.asArrayValue().list();
-            if (details.size() < 4) {
-                return null;
-            }
-
-            String namespace = valueToString(details.get(0));
-            String systemName = valueToString(details.get(1));
-            String eventName = valueToString(details.get(2));
-            Object eventData = valueToObject(details.get(3));
-
-            Map<String, Object> dataMap;
-            if (eventData instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> temp = (Map<String, Object>) eventData;
-                dataMap = temp;
-            } else {
-                dataMap = new HashMap<>();
-                if (eventData != null) {
-                    dataMap.put("rawData", eventData);
+            // Standard format: [eventType, [namespace, system, event, data], ...]
+            if (detailsValue.isArrayValue()) {
+                List<Value> details = detailsValue.asArrayValue().list();
+                if (details.isEmpty()) {
+                    // Engine callback format: [eventType, [], null]
+                    // eventType IS the event name (e.g. StoreBuySuccServerEvent, UrgeShipEvent)
+                    return new ParsedEvent(eventType, "engine", "callback", eventType, new HashMap<>());
                 }
+
+                if (details.size() < 3) {
+                    log.warn("[Decode] Details array too short: size={}, eventType={}", details.size(), eventType);
+                    return null;
+                }
+
+                String namespace = valueToString(details.get(0));
+                String systemName = valueToString(details.get(1));
+                String eventName = valueToString(details.get(2));
+                Object eventData = details.size() > 3 ? valueToObject(details.get(3)) : null;
+
+                Map<String, Object> dataMap = toDataMap(eventData);
+                return new ParsedEvent(eventType, namespace, systemName, eventName, dataMap);
             }
 
-            return new ParsedEvent(eventType, namespace, systemName, eventName, dataMap);
+            // Alternative format: [eventType, {data}, ...] (engine callbacks etc.)
+            if (detailsValue.isMapValue() || detailsValue.isBinaryValue() || detailsValue.isStringValue()) {
+                Object eventData = valueToObject(detailsValue);
+                Map<String, Object> dataMap = toDataMap(eventData);
+                // Use eventType as both namespace and event name for non-standard formats
+                return new ParsedEvent(eventType, "engine", "callback", eventType, dataMap);
+            }
 
-        } catch (IOException e) {
+            log.warn("[Decode] Unexpected details type: {}, eventType={}", detailsValue.getValueType(), eventType);
+            return null;
+
+        } catch (Exception e) {
+            log.warn("[Decode] Failed to decode PyRpc packet: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Converts event data to a Map.
+     */
+    private static Map<String, Object> toDataMap(Object eventData) {
+        if (eventData instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> temp = (Map<String, Object>) eventData;
+            return temp;
+        }
+        Map<String, Object> dataMap = new HashMap<>();
+        if (eventData != null) {
+            dataMap.put("rawData", eventData);
+        }
+        return dataMap;
     }
 
     /**

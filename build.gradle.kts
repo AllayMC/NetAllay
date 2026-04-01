@@ -8,7 +8,7 @@ plugins {
 
 group = "org.allaymc"
 description = "适用于Allay的网易我的世界客户端通信插件"
-version = "0.1.1-SNAPSHOT"
+version = "0.1.1"
 
 java {
     toolchain {
@@ -17,7 +17,7 @@ java {
 }
 
 allay {
-    api = "0.26.0"
+    api = "0.27.0"
     apiOnly = false
 
     plugin {

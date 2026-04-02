@@ -17,7 +17,7 @@ java {
 }
 
 allay {
-    api = "0.27.0"
+    api = "0.28.0-SNAPSHOT"
     apiOnly = false
 
     plugin {
@@ -33,7 +33,6 @@ repositories {
 
 dependencies {
     compileOnly("org.projectlombok:lombok:1.18.34")
-    compileOnly("org.allaymc:protocol-extension:0.1.6")
     compileOnly("com.google.code.gson:gson:2.10.1")
     implementation("org.msgpack:msgpack-core:0.9.8")
     annotationProcessor("org.projectlombok:lombok:1.18.34")

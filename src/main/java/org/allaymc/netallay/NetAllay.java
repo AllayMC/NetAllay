@@ -13,7 +13,7 @@ import org.allaymc.netallay.codec.PyRpcCodec;
 import org.allaymc.netallay.config.NetAllayConfig;
 import org.allaymc.netallay.handler.EventListenerRegistry;
 import org.allaymc.netallay.shop.ShopManager;
-import org.allaymc.protocol.extension.packet.PyRpcPacket;
+import org.cloudburstmc.protocol.bedrock.packet.PyRpcPacket;
 
 import java.io.IOException;
 import java.util.*;

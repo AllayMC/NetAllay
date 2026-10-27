@@ -17,7 +17,10 @@ java {
 }
 
 allay {
-    api = "0.28.0-SNAPSHOT"
+    // Pinned to the last published release pair. The newer 0.15.0-SNAPSHOT server (API 0.30.0-SNAPSHOT)
+    // no longer exposes Player#sendPacket(Object), which this plugin relies on to emit NetEase packets.
+    api = "0.29.0"
+    server = "0.14.0"
     apiOnly = false
 
     plugin {
@@ -32,6 +35,10 @@ repositories {
 }
 
 dependencies {
+    val allayServerJar = providers.environmentVariable("ALLAY_SERVER_JAR").orNull
+    if (!allayServerJar.isNullOrBlank()) {
+        compileOnly(files(allayServerJar))
+    }
     compileOnly("org.projectlombok:lombok:1.18.34")
     compileOnly("com.google.code.gson:gson:2.10.1")
     implementation("org.msgpack:msgpack-core:0.9.8")

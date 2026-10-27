@@ -8,5 +8,22 @@
     "cacheTime": 1,
     "shopServerUrl": "",
     "webServerUrl": ""
+  },
+  "skinAntiCheat": {
+    "enabled": true,
+    "sign": "62bd6025d29b17ff",
+    "testServer": false,
+    "webServerUrl": "",
+    "timeoutMillis": 5000,
+    "maxBatchSize": 32,
+    "checkGeometry": true,
+    "skipPersonaSkin": true,
+    "checkUnknownSkin": true,
+    "failOpenOnError": false,
+    "onErrorRetries": 1,
+    "trustNonPlayerSkins": true,
+    "whitelistUids": [],
+    "logDeniedSkin": true,
+    "logPassedSkin": false
   }
 }

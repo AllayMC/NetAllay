@@ -331,6 +331,76 @@ def SendToServer(self, eventName, data):
 self.SendToServer("RequestData", {"type": "player_info"})
 ```
 
+## 皮肤反作弊
+
+NetAllay 内置网易官方的皮肤反作弊（`ConfirmSkinPacket` 方案）：服务端在向网易客户端确认皮肤之前，先向网易 Web 服务校验皮肤 MD5；未通过校验的皮肤不会被确认，客户端始终显示默认皮肤。功能默认开启，可在 `plugins/NetAllay/config.json` 中关闭或调整。
+
+### 工作原理
+
+1. Allay 广播 `PlayerListPacket` / `PlayerSkinPacket` 时，插件记录每个皮肤的 persona 标记与 `skinId`；
+2. Allay 发送 `ConfirmSkinPacket` 时，插件拦截该包，把需要校验的皮肤扣下（原本一并确认的合法条目会立即补发）；
+3. 插件把 `md5(base64(皮肤数据))`、玩家 NetEase UID、`md5(geometry)` 一次性提交到 `/pe/web/skin-md5-valid-inner`；
+4. 返回合法的皮肤以新的 `ConfirmSkinPacket` 补发，非法皮肤直接丢弃（客户端继续显示史蒂夫）。
+
+persona 皮肤与 `.NonsyncCustom` 皮肤按官方方案跳过校验。校验结果按 `uuid + 皮肤MD5 + geometry MD5 + uid` 做并发去重，但**不会缓存**——官方要求每次都要校验，因为接口同时会检查玩家是否真的购买了对应皮肤组件。
+
+### 配置
+
+```json
+{
+  "skinAntiCheat": {
+    "enabled": true,
+    "sign": "62bd6025d29b17ff",
+    "testServer": false,
+    "webServerUrl": "",
+    "timeoutMillis": 5000,
+    "maxBatchSize": 32,
+    "checkGeometry": true,
+    "skipPersonaSkin": true,
+    "checkUnknownSkin": true,
+    "failOpenOnError": false,
+    "onErrorRetries": 1,
+    "trustNonPlayerSkins": true,
+    "whitelistUids": [],
+    "logDeniedSkin": true,
+    "logPassedSkin": false
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `enabled` | 总开关，默认 `true` |
+| `sign` | 官方固定的签名值 |
+| `testServer` | 使用测试环境接口（该环境永远返回合法），便于先跑通链路 |
+| `webServerUrl` | 自定义接口地址，可填完整 URL 或裸域名 |
+| `timeoutMillis` | 单次请求超时（毫秒） |
+| `maxBatchSize` | 单次请求最多提交的皮肤数量，超出自动分批 |
+| `checkGeometry` | 是否携带 `geo_list`（2.1+ 客户端必需；缺少 geometry 的皮肤会自动单独成批、不带该字段） |
+| `skipPersonaSkin` | 跳过 persona / `.NonsyncCustom` 皮肤（官方要求跳过） |
+| `checkUnknownSkin` | 拿不到 persona / skinId 信息时是否仍然校验 |
+| `failOpenOnError` | 请求失败时是否放行皮肤；`false`（默认）为官方行为——不确认即隐藏 |
+| `onErrorRetries` | 请求失败重试次数 |
+| `trustNonPlayerSkins` | NPC / 假人皮肤跳过校验（其 UID 是本地生成的，官方接口必然校验失败，默认跳过） |
+| `whitelistUids` | 免校验的 NetEase UID 列表（NPC / 机器人账号） |
+| `logDeniedSkin` | 是否记录被拦截的皮肤（INFO） |
+| `logPassedSkin` | 是否记录通过校验的皮肤（INFO，默认关闭；排查链路时打开可以看到每一次校验结果） |
+
+### 运行时 API
+
+```java
+NetAllay netAllay = NetAllay.getInstance();
+
+boolean enabled = netAllay.isSkinAntiCheatEnabled();  // 当前状态
+netAllay.setSkinAntiCheatEnabled(false);              // 临时关闭（不落盘）
+netAllay.reloadConfig();                              // 重新读取 config.json
+```
+
+### 部署要求
+
+- 服务端协议层必须已包含 `org.cloudburstmc.protocol.bedrock.packet.ConfirmSkinPacket`（API 0.28+）。仍使用 `org.allaymc.protocol.extension.packet.ConfirmSkinPacket` 的旧版服务端无法加载本插件。
+- 若服务器无法访问网易校验接口（或 `sign` 配置错误），在 `failOpenOnError=false` 时所有非 persona 皮肤都会被隐藏，排查时可先把 `testServer` 设为 `true` 验证链路。
+
 ## 注意事项
 
 1. **线程安全**：NetAllay 的 API 是线程安全的，可以在任何线程调用

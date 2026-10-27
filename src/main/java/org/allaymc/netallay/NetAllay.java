@@ -651,6 +651,20 @@ public class NetAllay extends Plugin {
         }
 
         byte[] data = pyRpcPacket.getData();
+
+        // Fast path: the engine drives part of the PyRpc channel itself. Packets such as
+        // ClientSetMotion (emitted every client tick while a client-side mod rewrites the local
+        // player's motion) are not mod events and no handler can be registered for them, so they
+        // are dropped before the payload is decoded instead of warning on the IO thread.
+        String eventType = PyRpcCodec.peekEventType(data);
+        if (eventType == null) {
+            return;
+        }
+        if (!PyRpcCodec.isModEventType(eventType)
+                && !listenerRegistry.hasHandlers(PyRpcCodec.ENGINE_NAMESPACE, PyRpcCodec.ENGINE_SYSTEM, eventType)) {
+            return;
+        }
+
         PyRpcCodec.ParsedEvent parsedEvent = PyRpcCodec.decode(data);
 
         if (parsedEvent == null) {

@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Codec for encoding and decoding PyRpc messages using MessagePack.
@@ -39,8 +40,108 @@ public final class PyRpcCodec {
      */
     public static final String EVENT_TYPE_C2S = "ModEventC2S";
 
+    /**
+     * Namespace used for engine callbacks, whose event name is the event type itself.
+     */
+    public static final String ENGINE_NAMESPACE = "engine";
+
+    /**
+     * System name used for engine callbacks.
+     */
+    public static final String ENGINE_SYSTEM = "callback";
+
+    /**
+     * Number of leading details entries of a mod event: [namespace, system, event, data].
+     */
+    private static final int MOD_EVENT_DETAILS_SIZE = 3;
+
+    /**
+     * Minimum interval between two identical decode warnings, in milliseconds.
+     * <p>
+     * PyRpc traffic is fully client-controlled and some engine packets are emitted once per
+     * client tick (for example {@code ClientSetMotion}, while a client-side mod rewrites the
+     * local player's motion), so an unthrottled warning floods the log and burns IO-thread time.
+     */
+    private static final long WARN_INTERVAL_MILLIS = 30_000L;
+
+    /**
+     * Per-warning-key state: {@code [lastLogMillis, suppressedCount]}.
+     */
+    private static final Map<String, long[]> WARN_STATE = new ConcurrentHashMap<>();
+
     private PyRpcCodec() {
         // Utility class
+    }
+
+    /**
+     * Checks whether the given event type is one of the mod event types.
+     *
+     * @param eventType the event type read from a PyRpc packet
+     * @return true when the packet is a mod event
+     */
+    public static boolean isModEventType(String eventType) {
+        return EVENT_TYPE_C2S.equals(eventType) || EVENT_TYPE_S2C.equals(eventType);
+    }
+
+    /**
+     * Reads only the event type of a PyRpc packet.
+     * <p>
+     * Cheap filter for callers that must decide whether a packet interests them before paying
+     * for a full {@link #decode(byte[])} pass.
+     *
+     * @param data the raw message data
+     * @return the event type, or null when the packet is not a PyRpc array
+     */
+    public static String peekEventType(byte[] data) {
+        if (data == null || data.length == 0) {
+            return null;
+        }
+        try (MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(data)) {
+            if (!unpacker.hasNext()) {
+                return null;
+            }
+            Value value = unpacker.unpackValue();
+            if (!value.isArrayValue()) {
+                return null;
+            }
+            List<Value> array = value.asArrayValue().list();
+            return array.isEmpty() ? null : valueToString(array.get(0));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Logs a warning at most once per {@link #WARN_INTERVAL_MILLIS} for the given key, and
+     * reports how many identical warnings were suppressed in the meantime.
+     *
+     * @param key      the throttle key, one per distinct anomaly
+     * @param template the SLF4J message template
+     * @param args     the template arguments
+     */
+    private static void warnThrottled(String key, String template, Object... args) {
+        if (!log.isWarnEnabled()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long[] state = WARN_STATE.computeIfAbsent(key, k -> new long[]{0L, 0L});
+        long suppressed;
+        synchronized (state) {
+            if (now - state[0] < WARN_INTERVAL_MILLIS) {
+                state[1]++;
+                return;
+            }
+            suppressed = state[1];
+            state[0] = now;
+            state[1] = 0L;
+        }
+        if (suppressed > 0) {
+            Object[] all = Arrays.copyOf(args, args.length + 1);
+            all[args.length] = suppressed;
+            log.warn(template + " ({} identical warning(s) suppressed)", all);
+        } else {
+            log.warn(template, args);
+        }
     }
 
     /**
@@ -93,13 +194,13 @@ public final class PyRpcCodec {
 
             Value value = unpacker.unpackValue();
             if (!value.isArrayValue()) {
-                log.warn("[Decode] Root is not array: {}", value.getValueType());
+                warnThrottled("root-not-array", "[Decode] Root is not array: {}", value.getValueType());
                 return null;
             }
 
             List<Value> array = value.asArrayValue().list();
             if (array.size() < 2) {
-                log.warn("[Decode] Root array too short: size={}", array.size());
+                warnThrottled("root-short", "[Decode] Root array too short: size={}", array.size());
                 return null;
             }
 
@@ -115,12 +216,11 @@ public final class PyRpcCodec {
                 if (details.isEmpty()) {
                     // Engine callback format: [eventType, [], null]
                     // eventType IS the event name (e.g. StoreBuySuccServerEvent, UrgeShipEvent)
-                    return new ParsedEvent(eventType, "engine", "callback", eventType, new HashMap<>());
+                    return new ParsedEvent(eventType, ENGINE_NAMESPACE, ENGINE_SYSTEM, eventType, new HashMap<>());
                 }
 
-                if (details.size() < 3) {
-                    log.warn("[Decode] Details array too short: size={}, eventType={}", details.size(), eventType);
-                    return null;
+                if (details.size() < MOD_EVENT_DETAILS_SIZE) {
+                    return parseShortDetails(eventType, details);
                 }
 
                 String namespace = valueToString(details.get(0));
@@ -137,16 +237,52 @@ public final class PyRpcCodec {
                 Object eventData = valueToObject(detailsValue);
                 Map<String, Object> dataMap = toDataMap(eventData);
                 // Use eventType as both namespace and event name for non-standard formats
-                return new ParsedEvent(eventType, "engine", "callback", eventType, dataMap);
+                return new ParsedEvent(eventType, ENGINE_NAMESPACE, ENGINE_SYSTEM, eventType, dataMap);
             }
 
-            log.warn("[Decode] Unexpected details type: {}, eventType={}", detailsValue.getValueType(), eventType);
+            warnThrottled("details-type:" + eventType,
+                    "[Decode] Unexpected details type: {}, eventType={}", detailsValue.getValueType(), eventType);
             return null;
 
         } catch (Exception e) {
-            log.warn("[Decode] Failed to decode PyRpc packet: {}", e.getMessage());
+            warnThrottled("decode-failed", "[Decode] Failed to decode PyRpc packet: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Handles a details array shorter than the mod event layout.
+     * <p>
+     * The engine emits PyRpc packets of its own (for example {@code ClientSetMotion}, sent by the
+     * client every time a client-side mod rewrites the local player's motion) whose details array
+     * carries only the payload instead of the {@code [namespace, system, event, data]} tuple.
+     * Those are not mod events, so the payload is handed to engine callbacks instead of failing
+     * the decode and flooding the log once per tick.
+     *
+     * @param eventType the event type of the packet
+     * @param details   the decoded details array, size 1 or 2
+     * @return the parsed engine event, or null when a mod event is malformed
+     */
+    private static ParsedEvent parseShortDetails(String eventType, List<Value> details) {
+        Object payload;
+        if (details.size() == 1) {
+            payload = valueToObject(details.get(0));
+        } else {
+            List<Object> list = new ArrayList<>(details.size());
+            for (Value value : details) {
+                list.add(valueToObject(value));
+            }
+            payload = list;
+        }
+
+        if (isModEventType(eventType)) {
+            // A mod event always carries [namespace, system, event, data]: a real defect.
+            warnThrottled("short:" + eventType,
+                    "[Decode] Details array too short: size={}, eventType={}", details.size(), eventType);
+            return null;
+        }
+
+        return new ParsedEvent(eventType, ENGINE_NAMESPACE, ENGINE_SYSTEM, eventType, toDataMap(payload));
     }
 
     /**

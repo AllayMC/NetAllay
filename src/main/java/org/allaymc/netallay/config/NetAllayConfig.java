@@ -11,6 +11,8 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Configuration for NetAllay plugin.
@@ -28,6 +30,11 @@ public class NetAllayConfig {
      * Shop configuration.
      */
     private ShopConfig shop = new ShopConfig();
+
+    /**
+     * Skin anti-cheat configuration.
+     */
+    private SkinAntiCheatConfig skinAntiCheat = new SkinAntiCheatConfig();
 
     /**
      * Shop-related configuration options.
@@ -86,6 +93,110 @@ public class NetAllayConfig {
     }
 
     /**
+     * Skin anti-cheat (皮肤反作弊) configuration.
+     * <p>
+     * NetEase clients only render a skin after the server sends a {@code ConfirmSkinPacket} for it.
+     * When this feature is enabled, every outgoing {@code ConfirmSkinPacket} is intercepted: the
+     * skins that need censorship are held back, verified against the NetEase web server
+     * ({@code /pe/web/skin-md5-valid-inner}) and only then forwarded to the client. Skins that fail
+     * the check are never confirmed, so the client keeps showing the default Steve/Alex skin.
+     */
+    @Getter
+    @Setter
+    public static class SkinAntiCheatConfig {
+        /**
+         * Whether the skin anti-cheat is enabled. Enabled by default.
+         */
+        private boolean enabled = true;
+
+        /**
+         * The fixed sign value required by the skin check API.
+         */
+        private String sign = "62bd6025d29b17ff";
+
+        /**
+         * Whether to use the test environment endpoint.
+         * <p>
+         * The test endpoint always answers "valid", which is useful for wiring up the feature
+         * without breaking skins. Set {@code failOpenOnError = false} and this flag to reproduce
+         * illegal-skin behaviour locally.
+         */
+        private boolean testServer = false;
+
+        /**
+         * Custom skin check endpoint (optional).
+         * <p>
+         * Accepts either a full URL ({@code https://host/pe/web/skin-md5-valid-inner}) or a bare
+         * host ({@code host}), in which case the default path is appended.
+         */
+        private String webServerUrl = "";
+
+        /**
+         * HTTP timeout in milliseconds for a single skin check request.
+         */
+        private int timeoutMillis = 5000;
+
+        /**
+         * Maximum number of skins sent in one HTTP request. Larger batches are split.
+         */
+        private int maxBatchSize = 32;
+
+        /**
+         * Whether to send {@code geo_list} (geometry MD5) with the request.
+         * <p>
+         * The field is required for clients 2.1 and newer. Disable it only for legacy servers.
+         */
+        private boolean checkGeometry = true;
+
+        /**
+         * Whether persona skins and ".NonsyncCustom" skins skip the check, as defined by the
+         * official scheme. These skins are rendered locally by the client and must not be withheld.
+         */
+        private boolean skipPersonaSkin = true;
+
+        /**
+         * Whether skins without local metadata (persona flag / skin id unknown) are still checked.
+         */
+        private boolean checkUnknownSkin = true;
+
+        /**
+         * Whether skins are shown when the check cannot be completed (HTTP error, non-zero code,
+         * malformed response). {@code false} matches the official scheme: no confirm is sent, so the
+         * skin stays hidden.
+         */
+        private boolean failOpenOnError = false;
+
+        /**
+         * How many times a failed request is retried before the {@code failOpenOnError} policy is
+         * applied. An explicit "invalid" answer from the web server is never retried.
+         */
+        private int onErrorRetries = 1;
+
+        /**
+         * Whether skins that do not belong to a connected player (NPCs and other fake players) skip
+         * the check. Their UIDs are generated locally and their skins are usually not registered on
+         * the NetEase side, so checking them would hide every NPC skin.
+         */
+        private boolean trustNonPlayerSkins = true;
+
+        /**
+         * NetEase UIDs that never get checked (for example bot/NPC accounts).
+         */
+        private List<String> whitelistUids = new ArrayList<>();
+
+        /**
+         * Whether rejected skins are logged.
+         */
+        private boolean logDeniedSkin = true;
+
+        /**
+         * Whether passed skins are logged too. Useful while wiring the feature up, noisy in a busy
+         * server because every viewer/target pair produces one line.
+         */
+        private boolean logPassedSkin = false;
+    }
+
+    /**
      * Loads the configuration from a file, or creates a default one if it doesn't exist.
      *
      * @param dataFolder the plugin's data folder
@@ -116,6 +227,13 @@ public class NetAllayConfig {
             NetAllayConfig config = GSON.fromJson(reader, NetAllayConfig.class);
             if (config == null) {
                 config = new NetAllayConfig();
+            }
+            // Sections may be missing or explicitly null in configs written by older versions.
+            if (config.getShop() == null) {
+                config.setShop(new ShopConfig());
+            }
+            if (config.getSkinAntiCheat() == null) {
+                config.setSkinAntiCheat(new SkinAntiCheatConfig());
             }
             return config;
         } catch (IOException e) {

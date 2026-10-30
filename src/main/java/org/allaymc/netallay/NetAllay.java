@@ -13,6 +13,7 @@ import org.allaymc.netallay.codec.PyRpcCodec;
 import org.allaymc.netallay.config.NetAllayConfig;
 import org.allaymc.netallay.handler.EventListenerRegistry;
 import org.allaymc.netallay.shop.ShopManager;
+import org.allaymc.netallay.skin.SkinAntiCheatManager;
 import org.cloudburstmc.protocol.bedrock.packet.PyRpcPacket;
 
 import java.io.IOException;
@@ -67,6 +68,12 @@ public class NetAllay extends Plugin {
     private ShopManager shopManager;
 
     /**
+     * The skin anti-cheat manager that censors confirmed skins.
+     */
+    @Getter
+    private SkinAntiCheatManager skinAntiCheatManager;
+
+    /**
      * The plugin configuration.
      */
     @Getter
@@ -92,6 +99,10 @@ public class NetAllay extends Plugin {
         // Initialize shop manager
         shopManager = new ShopManager(this);
 
+        // Initialize skin anti-cheat
+        skinAntiCheatManager = new SkinAntiCheatManager(this);
+        Server.getInstance().getEventBus().registerListener(skinAntiCheatManager);
+
         // Apply config to shop manager
         applyConfig();
 
@@ -100,6 +111,12 @@ public class NetAllay extends Plugin {
                 config.getShop().getGameId().isEmpty() ? "(not set)" : config.getShop().getGameId(),
                 config.getShop().isTestServer(),
                 config.getShop().isUseCustomShop());
+        var skinConfig = config.getSkinAntiCheat();
+        pluginLogger.info("Skin anti-cheat: enabled={}, env={}, geometry={}, failOpen={}",
+                skinConfig.isEnabled(),
+                skinConfig.isTestServer() ? "test" : "production",
+                skinConfig.isCheckGeometry(),
+                skinConfig.isFailOpenOnError());
     }
 
     @Override
@@ -111,6 +128,13 @@ public class NetAllay extends Plugin {
         if (shopManager != null) {
             shopManager.clearPlayerConfigs();
             shopManager = null;
+        }
+
+        // Clean up skin anti-cheat
+        if (skinAntiCheatManager != null) {
+            Server.getInstance().getEventBus().unregisterListener(skinAntiCheatManager);
+            skinAntiCheatManager.shutdown();
+            skinAntiCheatManager = null;
         }
 
         // Stop HTTP client
@@ -463,9 +487,13 @@ public class NetAllay extends Plugin {
     // ==================== Configuration Methods ====================
 
     /**
-     * Applies the current configuration to the shop manager.
+     * Applies the current configuration to the shop manager and the skin anti-cheat.
      */
     private void applyConfig() {
+        if (skinAntiCheatManager != null && config != null) {
+            skinAntiCheatManager.applyConfig(config.getSkinAntiCheat());
+        }
+
         if (shopManager != null && config != null) {
             NetAllayConfig.ShopConfig shopConfig = config.getShop();
             shopManager.setGameId(shopConfig.getGameId());
@@ -496,7 +524,8 @@ public class NetAllay extends Plugin {
     public void reloadConfig() {
         config = NetAllayConfig.load(pluginContainer.dataFolder());
         applyConfig();
-        pluginLogger.info("Configuration reloaded. Shop button visible: {}", !config.getShop().isUseCustomShop());
+        pluginLogger.info("Configuration reloaded. Shop button visible: {}, skin anti-cheat: {}",
+                !config.getShop().isUseCustomShop(), config.getSkinAntiCheat().isEnabled());
     }
 
     /**
@@ -578,6 +607,34 @@ public class NetAllay extends Plugin {
         return shopManager != null && shopManager.showHint(player, head, tail);
     }
 
+    // ==================== Skin Anti-Cheat Convenience Methods ====================
+
+    /**
+     * Checks whether the skin anti-cheat is currently enabled.
+     *
+     * @return {@code true} when skins are verified before being confirmed to clients
+     */
+    public boolean isSkinAntiCheatEnabled() {
+        return skinAntiCheatManager != null && skinAntiCheatManager.isEnabled();
+    }
+
+    /**
+     * Turns the skin anti-cheat on or off at runtime.
+     * <p>
+     * The change only affects packets sent afterwards and is not persisted; use
+     * {@code skinAntiCheat.enabled} in {@code config.json} (or {@link #saveConfig()}) for a
+     * permanent setting.
+     *
+     * @param enabled {@code true} to verify skins before confirming them
+     */
+    public void setSkinAntiCheatEnabled(boolean enabled) {
+        if (config != null) {
+            config.getSkinAntiCheat().setEnabled(enabled);
+        }
+        applyConfig();
+        pluginLogger.info("Skin anti-cheat {}.", enabled ? "enabled" : "disabled");
+    }
+
     // ==================== Internal Event Handler ====================
 
     @EventHandler
@@ -594,6 +651,20 @@ public class NetAllay extends Plugin {
         }
 
         byte[] data = pyRpcPacket.getData();
+
+        // Fast path: the engine drives part of the PyRpc channel itself. Packets such as
+        // ClientSetMotion (emitted every client tick while a client-side mod rewrites the local
+        // player's motion) are not mod events and no handler can be registered for them, so they
+        // are dropped before the payload is decoded instead of warning on the IO thread.
+        String eventType = PyRpcCodec.peekEventType(data);
+        if (eventType == null) {
+            return;
+        }
+        if (!PyRpcCodec.isModEventType(eventType)
+                && !listenerRegistry.hasHandlers(PyRpcCodec.ENGINE_NAMESPACE, PyRpcCodec.ENGINE_SYSTEM, eventType)) {
+            return;
+        }
+
         PyRpcCodec.ParsedEvent parsedEvent = PyRpcCodec.decode(data);
 
         if (parsedEvent == null) {
